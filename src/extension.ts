@@ -2,9 +2,10 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { askClaude } from './claudeClient';
 import { StoredThread, ThreadStatus, ThreadStore, findPendingComments } from './threadStore';
-import { ThreadView } from './threadView';
+import { SHOW_MORE_COMMENTS_COMMAND, ThreadView } from './threadView';
 
 const CONTROLLER_ID = 'inlineComment';
+const HAS_PENDING_COMMENTS_CONTEXT_KEY = 'inlineComment.hasPendingComments';
 
 class InlineCommentSession {
   private readonly store: ThreadStore;
@@ -23,16 +24,20 @@ class InlineCommentSession {
     this.refreshStatusBar();
   }
 
-  addPendingComment(reply: vscode.CommentReply): StoredThread {
+  addComment(reply: vscode.CommentReply): void {
     const thread = this.findOrCreateThread(reply.thread);
 
     this.store.addComment(thread, 'user', reply.text, 'pending');
     this.persistThread(thread);
-    return thread;
   }
 
-  async sendComment(reply: vscode.CommentReply): Promise<void> {
-    const thread = this.addPendingComment(reply);
+  async sendThread(editorThread: vscode.CommentThread): Promise<void> {
+    const thread = this.store.findThread(this.view.findThreadId(editorThread));
+    if (!thread || findPendingComments(thread).length === 0) {
+      vscode.window.showInformationMessage('このスレッドに未送信コメントはありません');
+      return;
+    }
+
     await this.sendThreads([thread]);
   }
 
@@ -60,6 +65,13 @@ class InlineCommentSession {
 
     thread.status = status;
     this.persistThread(thread);
+  }
+
+  showMoreComments(threadId: string): void {
+    const thread = this.store.findThread(threadId);
+    if (thread) {
+      this.view.showMoreComments(thread);
+    }
   }
 
   deleteThread(editorThread: vscode.CommentThread): void {
@@ -171,6 +183,8 @@ class InlineCommentSession {
       .findSendableThreads()
       .reduce((count, thread) => count + findPendingComments(thread).length, 0);
 
+    vscode.commands.executeCommand('setContext', HAS_PENDING_COMMENTS_CONTEXT_KEY, pendingCommentCount > 0);
+
     this.statusBarItem.text = `$(comment-discussion) 未送信 ${pendingCommentCount}`;
     if (pendingCommentCount > 0) {
       this.statusBarItem.show();
@@ -213,11 +227,11 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     commentController,
     statusBarItem,
-    vscode.commands.registerCommand('inlineComment.addPendingComment', (reply: vscode.CommentReply) =>
-      session.addPendingComment(reply)
+    vscode.commands.registerCommand('inlineComment.addComment', (reply: vscode.CommentReply) =>
+      session.addComment(reply)
     ),
-    vscode.commands.registerCommand('inlineComment.sendComment', (reply: vscode.CommentReply) =>
-      session.sendComment(reply)
+    vscode.commands.registerCommand('inlineComment.sendThread', (editorThread: vscode.CommentThread) =>
+      session.sendThread(editorThread)
     ),
     vscode.commands.registerCommand('inlineComment.sendAll', () => session.sendAll()),
     vscode.commands.registerCommand('inlineComment.startNewSession', () => session.startNewSession()),
@@ -226,6 +240,9 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand('inlineComment.unresolveThread', (editorThread: vscode.CommentThread) =>
       session.setThreadStatus(editorThread, 'unresolved')
+    ),
+    vscode.commands.registerCommand(SHOW_MORE_COMMENTS_COMMAND, (threadId: string) =>
+      session.showMoreComments(threadId)
     ),
     vscode.commands.registerCommand('inlineComment.deleteThread', (editorThread: vscode.CommentThread) =>
       session.deleteThread(editorThread)
